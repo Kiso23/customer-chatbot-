@@ -140,8 +140,8 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
         source = "ai"
         try:
             response = await ask_ai(session_history, user_msg)
-        except Exception:
-            response = "I'm having trouble connecting to the AI engine. Please try again later."
+        except Exception as e:
+            response = f"AI error: {str(e)[:300]}"
 
     # Update in-memory session history
     session_history.append({"role": "user", "content": user_msg})
