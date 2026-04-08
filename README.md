@@ -1,5 +1,7 @@
 # 🤖 AI-Powered Customer Support Chatbot
 
+🌐 **Live Demo:** [customer-chatbot-gilt.vercel.app](https://customer-chatbot-gilt.vercel.app)
+
 A full-stack AI customer support system built as a final-year project. It runs **completely free and offline** using a local LLM (LLaMA 3 via Ollama), with a React chat UI, FastAPI backend, semantic FAQ search, and a live analytics dashboard.
 
 ---
