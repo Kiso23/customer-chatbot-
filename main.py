@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import httpx
+from groq import Groq
 
 load_dotenv()
 
@@ -28,6 +29,10 @@ app.add_middleware(
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # In-memory session store: session_id -> list of {role, content}
 _sessions: dict[str, list[dict]] = defaultdict(list)
@@ -59,31 +64,53 @@ def reload_searcher(db: Session):
     get_searcher().fit([{"question": f.question, "answer": f.answer} for f in faqs])
 
 
-def build_prompt(history: list[dict], user_msg: str) -> str:
+def build_messages(history: list[dict], user_msg: str) -> list[dict]:
+    messages = [{
+        "role": "system",
+        "content": (
+            "You are a helpful customer support assistant. "
+            "Answer concisely and politely. Use conversation history for context. "
+            "If you don't know something, say so."
+        )
+    }]
+    for turn in history[-MAX_HISTORY:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_msg})
+    return messages
+
+
+async def ask_groq(history: list[dict], user_msg: str) -> str:
+    messages = build_messages(history, user_msg)
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        max_tokens=512,
+    )
+    return response.choices[0].message.content.strip()
+
+
+async def ask_ollama(history: list[dict], user_msg: str) -> str:
     system = (
         "You are a helpful customer support assistant. "
-        "Answer concisely and politely. Use the conversation history for context. "
-        "If you don't know something, say so."
+        "Answer concisely and politely. If you don't know, say so."
     )
     lines = [f"System: {system}\n"]
     for turn in history[-MAX_HISTORY:]:
         role = "User" if turn["role"] == "user" else "Assistant"
         lines.append(f"{role}: {turn['content']}")
-    lines.append(f"User: {user_msg}")
-    lines.append("Assistant:")
-    return "\n".join(lines)
-
-
-async def ask_ollama(history: list[dict], user_msg: str) -> str:
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": build_prompt(history, user_msg),
-        "stream": False,
-    }
+    lines.append(f"User: {user_msg}\nAssistant:")
+    payload = {"model": OLLAMA_MODEL, "prompt": "\n".join(lines), "stream": False}
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(OLLAMA_URL, json=payload)
         resp.raise_for_status()
         return resp.json().get("response", "").strip()
+
+
+async def ask_ai(history: list[dict], user_msg: str) -> str:
+    """Try Groq first, fall back to Ollama."""
+    if groq_client:
+        return await ask_groq(history, user_msg)
+    return await ask_ollama(history, user_msg)
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -112,7 +139,7 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
     else:
         source = "ai"
         try:
-            response = await ask_ollama(session_history, user_msg)
+            response = await ask_ai(session_history, user_msg)
         except Exception:
             response = "I'm having trouble connecting to the AI engine. Please try again later."
 
